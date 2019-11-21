@@ -26,7 +26,25 @@ pip install git+https://www.github.com/bojone/bert4keras.git
 
 当然，乐于贡献的朋友如果发现了某些bug的话，也欢迎指出修正甚至Pull Requests～
 
+## 权重
+
+目前支持加载的权重：
+- <strong>Google原版bert</strong>: https://github.com/google-research/bert
+- <strong>徐亮版roberta</strong>: https://github.com/brightmart/roberta_zh
+- <strong>哈工大版roberta</strong>: https://github.com/ymcui/Chinese-BERT-wwm
+- <strong>Google原版albert</strong><sup><a href="https://github.com/bojone/bert4keras/issues/29#issuecomment-552188981">[例子]</a></sup>: https://github.com/google-research/google-research/tree/master/albert
+- <strong>徐亮版albert</strong>: https://github.com/brightmart/albert_zh
+
+（注：徐亮版albert的开源时间早于Google版albert，这导致早期徐亮版albert的权重与Google版的不完全一致，换言之两者不能直接相互替换。为了减少代码冗余，bert4keras的0.2.4及后续版本均只支持加载<u>Google版</u>以徐亮版中<u>带Google字眼</u>的权重。如果要加载早期版本的权重，请用<a href="https://github.com/bojone/bert4keras/releases/tag/v0.2.3">0.2.3版本</a>。）
+
 ## 更新
+- <strong>2019.11.19</strong>: 将utils.py重命名为tokenizer.py。
+- <strong>2019.11.19</strong>: 想来想去，最后还是决定把snippets放到<a href="https://github.com/bojone/bert4keras/blob/master/bert4keras/snippets.py">bert4keras.snippets</a>下面去好了。
+- <strong>2019.11.18</strong>: 优化预训练权重加载逻辑，增加保存模型权重至Bert的checkpoint格式方法。
+- <strong>2019.11.17</strong>: <del>分离一些与Bert本身不直接相关的常用代码片段到<a href="https://github.com/bojone/python-snippets">python_snippets</a>，供其它项目共用。</del>
+- <strong>2019.11.11</strong>: 添加NSP部分。
+- <strong>2019.11.05</strong>: 适配<a href="https://github.com/google-research/google-research/tree/master/albert">google版albert</a>，不再支持<a href="https://github.com/brightmart/albert_zh">非Google版albert_zh</a>。
+- <strong>2019.11.05</strong>: 以RoBERTa为例子的预训练代码开发完毕，同时支持TPU/多GPU训练，详见<a href="https://github.com/bojone/bert4keras/tree/master/pretraining/roberta/">roberta</a>。欢迎在此基础上构建更多的预训练代码。
 - <strong>2019.11.01</strong>: 逐步增加预训练相关代码，详见<a href="https://github.com/bojone/bert4keras/tree/master/pretraining">pretraining</a>。
 - <strong>2019.10.28</strong>: 支持使用基于<a href="https://github.com/google/sentencepiece">sentencepiece</a>的tokenizer。
 - <strong>2019.10.25</strong>: 引入原生tokenizer。

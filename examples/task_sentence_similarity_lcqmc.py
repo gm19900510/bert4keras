@@ -1,10 +1,11 @@
 #! -*- coding:utf-8 -*-
-# 情感分析例子，加载albert_zh权重(https://github.com/brightmart/albert_zh)
+# 句子对分类任务，LCQMC数据集
+# val_acc: 0.887071, test_acc: 0.870320
 
 import json
 import numpy as np
 import codecs
-from bert4keras.backend import set_gelu
+from bert4keras.backend import set_gelu, K
 from bert4keras.tokenizer import Tokenizer
 from bert4keras.bert import build_bert_model
 from bert4keras.train import PiecewiseLinearLearningRate
@@ -18,24 +19,24 @@ set_gelu('tanh') # 切换gelu版本
 
 
 maxlen = 128
-config_path = '/root/kg/bert/albert_small_zh_google/albert_config.json'
-checkpoint_path = '/root/kg/bert/albert_small_zh_google/albert_model.ckpt'
-dict_path = '/root/kg/bert/albert_small_zh_google/vocab.txt'
+config_path = '/root/kg/bert/chinese_wwm_L-12_H-768_A-12/bert_config.json'
+checkpoint_path = '/root/kg/bert/chinese_wwm_L-12_H-768_A-12/bert_model.ckpt'
+dict_path = '/root/kg/bert/chinese_wwm_L-12_H-768_A-12/vocab.txt'
 
 
 def load_data(filename):
     D = []
     with codecs.open(filename, encoding='utf-8') as f:
         for l in f:
-            text, label = l.strip().split('\t')
-            D.append((text, int(label)))
+            text1, text2, label = l.strip().split('\t')
+            D.append((text1, text2, int(label)))
     return D
 
 
 # 加载数据集
-train_data = load_data('datasets/sentiment/sentiment.train.data')
-valid_data = load_data('datasets/sentiment/sentiment.valid.data')
-test_data = load_data('datasets/sentiment/sentiment.test.data')
+train_data = load_data('datasets/lcqmc/lcqmc.train.data')
+valid_data = load_data('datasets/lcqmc/lcqmc.valid.data')
+test_data = load_data('datasets/lcqmc/lcqmc.test.data')
 
 # 建立分词器
 tokenizer = Tokenizer(dict_path)
@@ -44,7 +45,7 @@ tokenizer = Tokenizer(dict_path)
 class data_generator:
     """数据生成器
     """
-    def __init__(self, data, batch_size=32):
+    def __init__(self, data, batch_size=64):
         self.data = data
         self.batch_size = batch_size
         self.steps = len(self.data) // self.batch_size
@@ -58,8 +59,8 @@ class data_generator:
             np.random.shuffle(idxs)
         batch_token_ids, batch_segment_ids, batch_labels = [], [], []
         for i in idxs:
-            text, label = self.data[i]
-            token_ids, segment_ids = tokenizer.encode(text, max_length=maxlen)
+            text1, text2, label = self.data[i]
+            token_ids, segment_ids = tokenizer.encode(text1, text2, max_length=maxlen)
             batch_token_ids.append(token_ids)
             batch_segment_ids.append(segment_ids)
             batch_labels.append([label])
@@ -80,7 +81,6 @@ bert = build_bert_model(
     config_path=config_path,
     checkpoint_path=checkpoint_path,
     with_pool=True,
-    albert=True,
     return_keras_model=False,
 )
 
@@ -94,8 +94,8 @@ model.summary()
 
 model.compile(
     loss='sparse_categorical_crossentropy',
-    # optimizer=Adam(1e-5),  # 用足够小的学习率
-    optimizer=PiecewiseLinearLearningRate(Adam(1e-4), {1000: 1, 2000: 0.1}),
+    optimizer=Adam(2e-5),  # 用足够小的学习率
+    # optimizer=PiecewiseLinearLearningRate(Adam(5e-5), {10000: 1, 30000: 0.1}),
     metrics=['accuracy'],
 )
 
@@ -132,7 +132,7 @@ class Evaluator(Callback):
 evaluator = Evaluator()
 model.fit_generator(train_generator.forfit(),
                     steps_per_epoch=len(train_generator),
-                    epochs=10,
+                    epochs=20,
                     callbacks=[evaluator])
 
 model.load_weights('best_model.weights')

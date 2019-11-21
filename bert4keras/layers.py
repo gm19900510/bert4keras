@@ -1,27 +1,18 @@
 #! -*- coding: utf-8 -*-
 # 自定义层
 
-import numpy as np
 import tensorflow as tf
-from bert4keras.backend import keras, K, get_all_attributes
+from bert4keras.backend import keras, K
+from bert4keras.snippets import get_all_attributes, is_string
+
 
 # 等价于 from keras.layers import *
 locals().update(get_all_attributes(keras.layers))
+initializers = keras.initializers
+activations = keras.activations
 
 
-def gelu_erf(x):
-    # 基于Erf直接计算的gelu函数
-    return 0.5 * x * (1.0 + tf.math.erf(x / np.sqrt(2.0)))
-
-
-def gelu_tanh(x):
-    # 基于Tanh近似计算的gelu函数
-    cdf = 0.5 * (1.0 + K.tanh(
-        (np.sqrt(2 / np.pi) * (x + 0.044715 * K.pow(x, 3)))))
-    return x * cdf
-
-
-def add_seq_mask(x, mask, mode=0, axis=None, heads=1):
+def sequence_masking(x, mask, mode=0, axis=None):
     """为序列条件mask的函数
     mask: 形如(batch_size, seq_len)的0-1矩阵；
     mode: 如果是0，则直接乘以mask；
@@ -32,10 +23,6 @@ def add_seq_mask(x, mask, mode=0, axis=None, heads=1):
     if mask is None or mode not in [0, 1]:
         return x
     else:
-        if heads is not 1:
-            mask = K.expand_dims(mask, 1)
-            mask = K.tile(mask, (1, heads, 1))
-            mask = K.reshape(mask, (-1, K.shape(mask)[2]))
         if axis is None:
             axis = 1
         if axis == -1:
@@ -54,19 +41,29 @@ def add_seq_mask(x, mask, mode=0, axis=None, heads=1):
 class MultiHeadAttention(Layer):
     """多头注意力机制
     """
-    def __init__(self, heads, head_size, key_size=None, **kwargs):
+    def __init__(self,
+                 heads,
+                 head_size,
+                 key_size=None,
+                 kernel_initializer='glorot_uniform',
+                 **kwargs):
         super(MultiHeadAttention, self).__init__(**kwargs)
         self.heads = heads
         self.head_size = head_size
         self.out_dim = heads * head_size
         self.key_size = key_size if key_size else head_size
+        self.kernel_initializer = initializers.get(kernel_initializer)
 
     def build(self, input_shape):
         super(MultiHeadAttention, self).build(input_shape)
-        self.q_dense = Dense(self.key_size * self.heads)
-        self.k_dense = Dense(self.key_size * self.heads)
-        self.v_dense = Dense(self.out_dim)
-        self.o_dense = Dense(self.out_dim)
+        self.q_dense = Dense(units=self.key_size * self.heads,
+                             kernel_initializer=self.kernel_initializer)
+        self.k_dense = Dense(units=self.key_size * self.heads,
+                             kernel_initializer=self.kernel_initializer)
+        self.v_dense = Dense(units=self.out_dim,
+                             kernel_initializer=self.kernel_initializer)
+        self.o_dense = Dense(units=self.out_dim,
+                             kernel_initializer=self.kernel_initializer)
 
     def call(self, inputs, q_mask=False, v_mask=False, a_mask=False):
         """实现多头注意力
@@ -105,32 +102,22 @@ class MultiHeadAttention(Layer):
         qw = K.reshape(qw, (-1, K.shape(q)[1], self.heads, self.key_size))
         kw = K.reshape(kw, (-1, K.shape(k)[1], self.heads, self.key_size))
         vw = K.reshape(vw, (-1, K.shape(v)[1], self.heads, self.head_size))
-        # 维度置换
-        qw = K.permute_dimensions(qw, (0, 2, 1, 3))
-        kw = K.permute_dimensions(kw, (0, 2, 1, 3))
-        vw = K.permute_dimensions(vw, (0, 2, 1, 3))
-        # 转为三阶张量
-        qw = K.reshape(qw, (-1, K.shape(q)[1], self.key_size))
-        kw = K.reshape(kw, (-1, K.shape(k)[1], self.key_size))
-        vw = K.reshape(vw, (-1, K.shape(v)[1], self.head_size))
         # Attention
-        a = K.batch_dot(qw, kw, [2, 2]) / np.sqrt(self.key_size)
-        a = add_seq_mask(a, v_mask, 1, -1, self.heads)
+        a = tf.einsum('bjhd,bkhd->bhjk', qw, kw) / self.key_size**0.5
+        a = sequence_masking(a, v_mask, 1, -1)
         if a_mask is not None:
-            if a_mask == 'history_only':
-                ones = K.ones_like(a[:1])
-                a_mask = (ones - tf.matrix_band_part(ones, -1, 0)) * 1e12
+            if is_string(a_mask) and a_mask == 'history_only':
+                ones = K.ones_like(a[:1, :1])
+                a_mask = (ones - tf.linalg.band_part(ones, -1, 0)) * 1e12
                 a = a - a_mask
             else:
                 a = a - (1 - a_mask) * 1e12
         a = K.softmax(a)
         # 完成输出
-        o = K.batch_dot(a, vw, [2, 1])
-        o = K.reshape(o, (-1, self.heads, K.shape(q)[1], self.head_size))
-        o = K.permute_dimensions(o, (0, 2, 1, 3))
+        o = tf.einsum('bhjk,bkhd->bjhd', a, vw)
         o = K.reshape(o, (-1, K.shape(o)[1], self.out_dim))
         o = self.o_dense(o)
-        o = add_seq_mask(o, q_mask, 0)
+        o = sequence_masking(o, q_mask, 0)
         return o
 
     def compute_output_shape(self, input_shape):
@@ -140,7 +127,8 @@ class MultiHeadAttention(Layer):
         config = {
             'heads': self.heads,
             'head_size': self.head_size,
-            'key_size': self.key_size
+            'key_size': self.key_size,
+            'kernel_initializer': initializers.serialize(self.kernel_initializer),
         }
         base_config = super(MultiHeadAttention, self).get_config()
         return dict(list(base_config.items()) + list(config.items()))
@@ -173,65 +161,28 @@ class LayerNormalization(Layer):
         return outputs
 
 
-class FactorizedEmbedding(Layer):
-    """基于低秩分解的Embedding层
-    """
-    def __init__(self, input_dim, output_dim, hidden_dim=None, **kwargs):
-        super(FactorizedEmbedding, self).__init__(**kwargs)
-        self.input_dim = input_dim
-        self.output_dim = output_dim
-        if hidden_dim is None:
-            self.hidden_dim = output_dim
-        else:
-            self.hidden_dim = hidden_dim
-
-    def build(self, input_shape):
-        super(FactorizedEmbedding, self).build(input_shape)
-        self._embeddings = self.add_weight(name='embeddings',
-                                           shape=(self.input_dim,
-                                                  self.hidden_dim),
-                                           initializer='uniform')
-        self._project_kernel = self.add_weight(name='project_kernel',
-                                               shape=(self.hidden_dim,
-                                                      self.output_dim),
-                                               initializer='glorot_uniform')
-        self.embeddings = K.dot(self._embeddings, self._project_kernel)
-
-    def call(self, inputs):
-        if K.dtype(inputs) != 'int32':
-            inputs = K.cast(inputs, 'int32')
-        outputs = K.gather(self._embeddings, inputs)
-        outputs = K.dot(outputs, self._project_kernel)
-        return outputs
-
-    def compute_output_shape(self, input_shape):
-        return input_shape + (self.output_dim, )
-
-    def get_config(self):
-        config = {
-            'input_dim': self.input_dim,
-            'output_dim': self.output_dim,
-            'hidden_dim': self.hidden_dim
-        }
-        base_config = super(FactorizedEmbedding, self).get_config()
-        return dict(list(base_config.items()) + list(config.items()))
-
-
 class PositionEmbedding(Layer):
     """定义位置Embedding，这里的Embedding是可训练的。
     """
-    def __init__(self, input_dim, output_dim, merge_mode='add', **kwargs):
+    def __init__(self,
+                 input_dim,
+                 output_dim,
+                 merge_mode='add',
+                 embeddings_initializer='zeros',
+                 **kwargs):
         super(PositionEmbedding, self).__init__(**kwargs)
         self.input_dim = input_dim
         self.output_dim = output_dim
         self.merge_mode = merge_mode
+        self.embeddings_initializer = initializers.get(embeddings_initializer)
 
     def build(self, input_shape):
         super(PositionEmbedding, self).build(input_shape)
-        self.embeddings = self.add_weight(name='embeddings',
-                                          shape=(self.input_dim,
-                                                 self.output_dim),
-                                          initializer='zeros')
+        self.embeddings = self.add_weight(
+            name='embeddings',
+            shape=(self.input_dim, self.output_dim),
+            initializer=self.embeddings_initializer,
+        )
 
     def call(self, inputs):
         input_shape = K.shape(inputs)
@@ -254,25 +205,103 @@ class PositionEmbedding(Layer):
         config = {
             'input_dim': self.input_dim,
             'output_dim': self.output_dim,
-            'merge_mode': self.merge_mode
+            'merge_mode': self.merge_mode,
+            'embeddings_initializer': initializers.serialize(self.embeddings_initializer),
         }
         base_config = super(PositionEmbedding, self).get_config()
+        return dict(list(base_config.items()) + list(config.items()))
+
+
+class GroupDense(Layer):
+    """分组全连接
+    输入输出跟普通Dense一样，但参数更少，速度更快。
+    """
+    def __init__(self,
+                 units,
+                 groups=2,
+                 activation='linear',
+                 kernel_initializer='glorot_uniform',
+                 **kwargs):
+        super(GroupDense, self).__init__(**kwargs)
+        self.units = units
+        self.groups = groups
+        self.activation = activations.get(activation)
+        self.kernel_initializer = initializers.get(kernel_initializer)
+
+    def build(self, input_shape):
+        super(GroupDense, self).build(input_shape)
+        input_dim = input_shape[-1]
+        if not isinstance(input_dim, int):
+            input_dim = input_dim.value
+        assert input_dim % self.groups == 0
+        assert self.units % self.groups == 0
+        self.kernel = self.add_weight(name='kernel',
+                                      shape=(input_dim // self.groups,
+                                             self.units // self.groups,
+                                             self.groups),
+                                      initializer=self.kernel_initializer)
+        self.bias = self.add_weight(name='bias',
+                                    shape=(self.units, ),
+                                    initializer='zeros')
+
+    def call(self, inputs):
+        ndim, shape = K.ndim(inputs), K.shape(inputs)
+        shape = [shape[i] for i in range(ndim)]
+        inputs = K.reshape(inputs, shape[:-1] + [shape[-1] // self.groups, self.groups])
+        outputs = tf.einsum('...ig,ijg->...gj', inputs, self.kernel)
+        outputs = K.reshape(outputs, shape[:-1] + [self.units])
+        outputs = outputs + self.bias
+        outputs = self.activation(outputs)
+        return outputs
+
+    def compute_output_shape(self, input_shape):
+        return input_shape[:-1] + (self.units, )
+
+    def get_config(self):
+        config = {
+            'units': self.units,
+            'groups': self.groups,
+            'activation': activations.serialize(self.activation),
+            'kernel_initializer': initializers.serialize(self.kernel_initializer),
+        }
+        base_config = super(GroupDense, self).get_config()
         return dict(list(base_config.items()) + list(config.items()))
 
 
 class FeedForward(Layer):
     """FeedForward层，其实就是两个Dense层的叠加
     """
-    def __init__(self, units, activation='relu', **kwargs):
+    def __init__(self,
+                 units,
+                 groups=1,
+                 activation='relu',
+                 kernel_initializer='glorot_uniform',
+                 **kwargs):
         super(FeedForward, self).__init__(**kwargs)
         self.units = units
-        self.activation = activation
+        self.groups = groups
+        self.activation = activations.get(activation)
+        self.kernel_initializer = initializers.get(kernel_initializer)
 
     def build(self, input_shape):
         super(FeedForward, self).build(input_shape)
         output_dim = input_shape[-1]
-        self.dense_1 = Dense(self.units, activation=self.activation)
-        self.dense_2 = Dense(output_dim)
+        if not isinstance(output_dim, int):
+            output_dim = output_dim.value
+        if self.groups is None or self.groups == 1:
+            self.dense_1 = Dense(units=self.units,
+                                 activation=self.activation,
+                                 kernel_initializer=self.kernel_initializer)
+            self.dense_2 = Dense(units=output_dim,
+                                 kernel_initializer=self.kernel_initializer)
+        else:
+            self.dense_1 = GroupDense(units=self.units,
+                                      groups=self.groups,
+                                      activation=self.activation,
+                                      kernel_initializer=self.kernel_initializer)
+            self.dense_2 = GroupDense(units=output_dim,
+                                      groups=self.groups,
+                                      kernel_initializer=self.kernel_initializer)
 
     def call(self, inputs):
         x = self.dense_1(inputs)
@@ -280,7 +309,11 @@ class FeedForward(Layer):
         return x
 
     def get_config(self):
-        config = {'units': self.units, 'activation': self.activation}
+        config = {
+            'units': self.units,
+            'activation': activations.serialize(self.activation),
+            'kernel_initializer': initializers.serialize(self.kernel_initializer),
+        }
         base_config = super(FeedForward, self).get_config()
         return dict(list(base_config.items()) + list(config.items()))
 
@@ -292,7 +325,9 @@ class EmbeddingDense(Layer):
     def __init__(self, embedding_name, activation='softmax', **kwargs):
         super(EmbeddingDense, self).__init__(**kwargs)
         self.embedding_name = embedding_name
-        self.activation = activation
+        if isinstance(activation, bool):
+            activation = 'softmax'
+        self.activation = activations.get(activation)
 
     def call(self, inputs):
         if not hasattr(self, 'kernel'):
@@ -326,7 +361,7 @@ class EmbeddingDense(Layer):
 
         outputs = K.dot(inputs, self.kernel)
         outputs = K.bias_add(outputs, self.bias)
-        outputs = Activation(self.activation).call(outputs)
+        outputs = self.activation(outputs)
         return outputs
 
     def compute_output_shape(self, input_shape):
@@ -335,21 +370,19 @@ class EmbeddingDense(Layer):
     def get_config(self):
         config = {
             'embedding_name': self.embedding_name,
-            'activation': self.activation
+            'activation': activations.serialize(self.activation),
         }
         base_config = super(EmbeddingDense, self).get_config()
         return dict(list(base_config.items()) + list(config.items()))
 
 
 custom_objects = {
-    'gelu_erf': gelu_erf,
-    'gelu_tanh': gelu_tanh,
     'MultiHeadAttention': MultiHeadAttention,
     'LayerNormalization': LayerNormalization,
-    'FactorizedEmbedding': FactorizedEmbedding,
     'PositionEmbedding': PositionEmbedding,
+    'GroupDense': GroupDense,
     'FeedForward': FeedForward,
-    'EmbeddingDense': EmbeddingDense
+    'EmbeddingDense': EmbeddingDense,
 }
 
 keras.utils.get_custom_objects().update(custom_objects)

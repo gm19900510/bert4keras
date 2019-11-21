@@ -1,9 +1,9 @@
 #! -*- coding: utf-8 -*-
 # 测试代码可用性: 提取特征
 
+from bert4keras.backend import keras
 from bert4keras.bert import build_bert_model
-from bert4keras.utils import Tokenizer
-from keras.models import load_model
+from bert4keras.tokenizer import Tokenizer
 import numpy as np
 
 
@@ -39,5 +39,5 @@ print(model.predict([np.array([token_ids]), np.array([segment_ids])]))
 print('\n ===== reloading and predicting =====\n')
 model.save('test.model')
 del model
-model = load_model('test.model')
+model = keras.models.load_model('test.model')
 print(model.predict([np.array([token_ids]), np.array([segment_ids])]))

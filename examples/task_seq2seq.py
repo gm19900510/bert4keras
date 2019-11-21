@@ -7,15 +7,15 @@ import glob
 import numpy as np
 from tqdm import tqdm
 import os, json, codecs
-from collections import Counter
-import uniout
 from bert4keras.bert import build_bert_model
-from bert4keras.utils import Tokenizer, load_vocab, parallel_apply
+from bert4keras.tokenizer import Tokenizer, load_vocab
+from bert4keras.snippets import parallel_apply, sequence_padding
 from keras.layers import *
 from keras.models import Model
 from keras import backend as K
 from keras.callbacks import Callback
 from keras.optimizers import Adam
+
 
 seq2seq_config = 'seq2seq_config.json'
 min_count = 40
@@ -45,15 +45,12 @@ def read_texts():
                 yield content[:max_input_len], title
 
 
-_token_dict = load_vocab(dict_path)  # 读取词典
-_tokenizer = Tokenizer(_token_dict)  # 建立临时分词器
+_token_dict = load_vocab(dict_path) # 读取词典
+_tokenizer = Tokenizer(_token_dict) # 建立临时分词器
 
 if os.path.exists(seq2seq_config):
-
     tokens = json.load(open(seq2seq_config))
-
 else:
-
     def _batch_texts():
         texts = []
         for text in read_texts():
@@ -108,13 +105,6 @@ for t in tokens:
 tokenizer = Tokenizer(token_dict)  # 建立分词器
 
 
-def padding(x):
-    """padding至batch内的最大长度
-    """
-    ml = max([len(i) for i in x])
-    return np.array([i + [0] * (ml - len(i)) for i in x])
-
-
 def data_generator():
     while True:
         X, S = [], []
@@ -123,8 +113,8 @@ def data_generator():
             X.append(x)
             S.append(s)
             if len(X) == batch_size:
-                X = padding(X)
-                S = padding(S)
+                X = sequence_padding(X)
+                S = sequence_padding(S)
                 yield [X, S], None
                 X, S = [], []
 
@@ -132,7 +122,7 @@ def data_generator():
 model = build_bert_model(
     config_path,
     checkpoint_path,
-    seq2seq=True,
+    application='seq2seq',
     keep_words=keep_words,  # 只保留keep_words中的字，精简原字表
 )
 
@@ -173,13 +163,11 @@ def gen_sent(s, topk=2):
                 _candidate_ids.append(ids + [k + 3])
                 _candidate_scores.append(sco + _log_probas[j][k])
         _topk_arg = np.argsort(_candidate_scores)[-topk:]  # 从中选出新的topk
-        for j, k in enumerate(_topk_arg):
-            target_ids[j].append(_candidate_ids[k][-1])
-            target_scores[j] = _candidate_scores[k]
-        ends = [j for j, k in enumerate(target_ids) if k[-1] == 3]
-        if len(ends) > 0:
-            k = np.argmax([target_scores[j] for j in ends])
-            return tokenizer.decode(target_ids[ends[k]])
+        target_ids = [_candidate_ids[k] for k in _topk_arg]
+        target_scores = [_candidate_scores[k] for k in _topk_arg]
+        best_one = np.argmax(target_scores)
+        if target_ids[best_one][-1] == 3:
+            return tokenizer.decode(target_ids[best_one])
     # 如果max_output_len字都找不到结束符，直接返回
     return tokenizer.decode(target_ids[np.argmax(target_scores)])
 
